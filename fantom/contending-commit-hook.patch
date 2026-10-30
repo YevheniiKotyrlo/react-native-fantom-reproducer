@@ -1,0 +1,177 @@
+diff --git a/private/react-native-fantom/tester/src/ContendingCommitHook.cpp b/private/react-native-fantom/tester/src/ContendingCommitHook.cpp
+new file mode 100644
+index 0000000..2bc4f19
+--- /dev/null
++++ b/private/react-native-fantom/tester/src/ContendingCommitHook.cpp
+@@ -0,0 +1,78 @@
++#include "ContendingCommitHook.h"
++
++#include <react/renderer/mounting/ShadowTree.h>
++
++namespace facebook::react {
++
++namespace {
++
++// ShadowTree::commit takes the revision lock for the attempt that follows
++// this many failed ones (MAX_COMMIT_ATTEMPTS_BEFORE_LOCKING in ShadowTree.cpp).
++constexpr int kUnlockedAttempts = 3;
++
++} // namespace
++
++ContendingCommitHook::ContendingCommitHook(UIManager& uiManager)
++    : uiManager_(uiManager), thread_([this] { run(); }) {
++  uiManager_.registerCommitHook(*this);
++}
++
++ContendingCommitHook::~ContendingCommitHook() noexcept {
++  uiManager_.unregisterCommitHook(*this);
++  {
++    std::lock_guard lock(mutex_);
++    stopping_ = true;
++  }
++  changed_.notify_all();
++  thread_.join();
++}
++
++void ContendingCommitHook::commitHookWasRegistered(
++    const UIManager& /*uiManager*/) noexcept {}
++
++void ContendingCommitHook::commitHookWasUnregistered(
++    const UIManager& /*uiManager*/) noexcept {}
++
++RootShadowNode::Unshared ContendingCommitHook::shadowTreeWillCommit(
++    const ShadowTree& shadowTree,
++    const RootShadowNode::Shared& /*oldRootShadowNode*/,
++    const RootShadowNode::Unshared& newRootShadowNode,
++    const ShadowTreeCommitOptions& commitOptions) noexcept {
++  if (!commitOptions.mountSynchronously ||
++      std::this_thread::get_id() == thread_.get_id()) {
++    return newRootShadowNode;
++  }
++  std::unique_lock lock(mutex_);
++  if (requested_ >= kUnlockedAttempts) {
++    return newRootShadowNode;
++  }
++  shadowTree_ = &shadowTree;
++  requested_ += 1;
++  const int requested = requested_;
++  changed_.notify_all();
++  changed_.wait(lock, [&] { return landed_ >= requested; });
++  return newRootShadowNode;
++}
++
++void ContendingCommitHook::run() {
++  std::unique_lock lock(mutex_);
++  while (true) {
++    changed_.wait(lock, [this] { return stopping_ || requested_ > landed_; });
++    if (stopping_) {
++      return;
++    }
++    const ShadowTree* shadowTree = shadowTree_;
++    lock.unlock();
++    shadowTree->commit(
++        [](const RootShadowNode& oldRootShadowNode) {
++          return std::static_pointer_cast<RootShadowNode>(
++              oldRootShadowNode.ShadowNode::clone({}));
++        },
++        {.mountSynchronously = false});
++    lock.lock();
++    landed_ += 1;
++    changed_.notify_all();
++  }
++}
++
++} // namespace facebook::react
+diff --git a/private/react-native-fantom/tester/src/ContendingCommitHook.h b/private/react-native-fantom/tester/src/ContendingCommitHook.h
+new file mode 100644
+index 0000000..aeb3e73
+--- /dev/null
++++ b/private/react-native-fantom/tester/src/ContendingCommitHook.h
+@@ -0,0 +1,46 @@
++/*
++ * A commit hook that lands a commit of the same shadow tree, made from a thread
++ * of its own, inside each of the first attempts of a commit that mounts
++ * synchronously, so that commit reaches its locked attempt when
++ * preventShadowTreeCommitExhaustion is on.
++ */
++
++#pragma once
++
++#include <react/renderer/uimanager/UIManager.h>
++#include <react/renderer/uimanager/UIManagerCommitHook.h>
++
++#include <condition_variable>
++#include <mutex>
++#include <thread>
++
++namespace facebook::react {
++
++class ContendingCommitHook final : public UIManagerCommitHook {
++ public:
++  explicit ContendingCommitHook(UIManager& uiManager);
++  ~ContendingCommitHook() noexcept override;
++
++  void commitHookWasRegistered(const UIManager& uiManager) noexcept override;
++  void commitHookWasUnregistered(const UIManager& uiManager) noexcept override;
++
++  RootShadowNode::Unshared shadowTreeWillCommit(
++      const ShadowTree& shadowTree,
++      const RootShadowNode::Shared& oldRootShadowNode,
++      const RootShadowNode::Unshared& newRootShadowNode,
++      const ShadowTreeCommitOptions& commitOptions) noexcept override;
++
++ private:
++  void run();
++
++  UIManager& uiManager_;
++  std::mutex mutex_;
++  std::condition_variable changed_;
++  const ShadowTree* shadowTree_{nullptr};
++  int requested_{0};
++  int landed_{0};
++  bool stopping_{false};
++  std::thread thread_;
++};
++
++} // namespace facebook::react
+diff --git a/private/react-native-fantom/tester/src/TesterAppDelegate.cpp b/private/react-native-fantom/tester/src/TesterAppDelegate.cpp
+index 7738540..3cb8bc5 100644
+--- a/private/react-native-fantom/tester/src/TesterAppDelegate.cpp
++++ b/private/react-native-fantom/tester/src/TesterAppDelegate.cpp
+@@ -7,6 +7,8 @@
+ 
+ #include "TesterAppDelegate.h"
+ 
++#include "ContendingCommitHook.h"
++
+ #include "FantomTimerRegistry.h"
+ #include "NativeFantom.h"
+ #include "platform/TesterTurboModuleProvider.h"
+@@ -157,9 +159,15 @@ TesterAppDelegate::TesterAppDelegate(
+   // Ensure that the ReactHost initialisation is completed.
+   // This will call `setupJSNativeFantom`.
+   flushMessageQueue();
++
++  reactHost_->runOnScheduler([this](Scheduler& scheduler) {
++    contendingCommitHook_ =
++        std::make_unique<ContendingCommitHook>(*scheduler.getUIManager());
++  });
+ }
+ 
+ TesterAppDelegate::~TesterAppDelegate() {
++  contendingCommitHook_.reset();
+   // Stop all surfaces before destroying the ReactHost to prevent asserts from
+   // crashing the app.
+   reactHost_->stopAllSurfaces();
+diff --git a/private/react-native-fantom/tester/src/TesterAppDelegate.h b/private/react-native-fantom/tester/src/TesterAppDelegate.h
+index de349ba..5a0ca25 100644
+--- a/private/react-native-fantom/tester/src/TesterAppDelegate.h
++++ b/private/react-native-fantom/tester/src/TesterAppDelegate.h
+@@ -89,6 +89,7 @@ class TesterAppDelegate {
+   std::vector<std::string> getConsoleLogs();
+ 
+   std::unique_ptr<ReactHost> reactHost_;
++  std::unique_ptr<class ContendingCommitHook> contendingCommitHook_;
+   std::weak_ptr<StubQueue> queue_;
+ 
+   std::shared_ptr<RunLoopObserverManager> runLoopObserverManager_;

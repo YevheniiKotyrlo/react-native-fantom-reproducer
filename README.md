@@ -1,79 +1,22 @@
-# react-native-fantom-reproducer
+# React Native's Fantom tester, built on Linux
 
-![Build](https://github.com/YevheniiKotyrlo/react-native-fantom-reproducer/workflows/Pre%20Merge%20Checks/badge.svg)
+This repository was made from React Native's reproducer template. The reproductions are in `fantom/`; the template's `ReproducerApp` is unchanged and none of them use it.
 
-This is your new React Native Reproducer project.
+Each reproduction builds Fantom's tester (`private/react-native-fantom`) from a fresh clone of `react/react-native`, as React Native's Fantom CI job builds it: in the `reactnativecommunity/react-native-android` image, with `yarn workspace @react-native/fantom build`, but with Clang and LLD from the LLVM 23.1.3 release in place of the apt Clang the CI installs.
 
-# Reproducer TODO list
-
-- [x] 1. Create a new reproducer project.
-- [ ] 2. Git clone your repository locally.
-- [ ] 3. Edit the project to reproduce the failure you're seeing.
-- [ ] 4. Push your changes, so that Github Actions can run the CI.
-- [ ] 5. Make sure the repository is public and share the link with the issue you reported.
-
-# How to use this Reproducer
-
-This project has been created with `npx @react-native-community/cli init` and is a vanilla React Native app.
-
-> [!IMPORTANT]  
-> Make sure you have completed the [React Native - Environment Setup](https://reactnative.dev/docs/set-up-your-environment) so that you have a working environment locally.
-
-## Step 1: Start the Metro Server
-
-First, you will need to start **Metro**, the JavaScript _bundler_ that ships _with_ React Native.
-
-To start Metro, run the following command from the _root_ of your React Native project:
-
-```bash
-# using npm
-npm start
-
-# OR using Yarn
-yarn start
+```sh
+./fantom/reproduce.sh <case> [<react-native branch or tag, main by default>]
 ```
 
-## Step 2: Start your Application
+It needs Docker and nothing else. The image is defined by `fantom/Dockerfile`, the steps of each case are in `fantom/run-case.sh`, and a named volume, `react-native-fantom-reproducer-cache`, keeps Gradle's and Yarn's downloads between runs.
 
-Let Metro Bundler run in its _own_ terminal. Open a _new_ terminal from the _root_ of your React Native project. Run the following command to start your _Android_ or _iOS_ app:
+| Case | What it runs | What it shows |
+| --- | --- | --- |
+| `build` | Fantom's CI build | on `main`, `nlohmann/json.hpp` 3.11.2 fails `-Wdeprecated-literal-operator` under `-Werror`; on `0.88-stable`, Hermes's source build finds no `CMakeLists.txt` in the unpacked tarball |
+| `asan-folly-sanitize-leak` | the build under AddressSanitizer | the tester's link misses `folly::detail::annotate_object_collected_impl` and `annotate_object_leaked_impl`, since Fantom's folly omits `SanitizeLeak.cpp` |
+| `asan-jsi-twice` | Hermes and the tester under AddressSanitizer, `SanitizeLeak.cpp` added, then `View-itest.js` | an odr-violation: `libhermesvm.so` and the tester's `libjsi.so` each define jsi's globals |
+| `asan-jsi-duplicates-folly` | Hermes built plain, the tester under AddressSanitizer, `SanitizeLeak.cpp` added, then `View-itest.js` | an odr-violation: `libjsi.so` carries its own copy of folly and double-conversion beside the tester's |
+| `cxx-turbomodule-per-lookup` | `fantom/TurboModuleLookup-itest.js` | two lookups of one TurboModule name answer two different modules on the `cxx` platform |
+| `tsan-mount-inside-locked-commit` | Hermes and the tester under ThreadSanitizer, the tester with `fantom/contending-commit-hook.patch`, which lands a commit of the same tree inside each of the first attempts of a commit that mounts synchronously, then `fantom/LockedCommitMount-itest.js`, which stops a surface under `preventShadowTreeCommitExhaustion` | a lock-order inversion between `ShadowTreeRegistry`'s lock and the shadow tree's revision lock: the empty-tree commit's locked attempt mounts, and the tester reports the mount, taking the registry's lock, inside it |
 
-### For Android
-
-```bash
-# using npm
-npm run android
-
-# OR using Yarn
-yarn android
-```
-
-### For iOS
-
-First, make sure you install dependencies with:
-
-```bash
-cd ios && bundle install && bundle exec pod install
-```
-
-Then you can run the iOS app with:
-
-```bash
-# using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
-```
-
-If everything is set up _correctly_, you should see your new app running in your _Android Emulator_ or _iOS Simulator_ shortly provided you have set up your emulator/simulator correctly.
-
-This is one way to run your app — you can also run it directly from within Android Studio and Xcode respectively.
-
-## Step 3: Modifying your App
-
-Now that you have successfully run the app, let's modify it.
-
-1. Open `App.tsx` in your text editor of choice and edit some lines.
-2. For **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Developer Menu** (<kbd>Ctrl</kbd> + <kbd>M</kbd> (on Window and Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (on macOS)) to see your changes!
-
-   For **iOS**: Hit <kbd>Cmd ⌘</kbd> + <kbd>R</kbd> in your iOS Simulator to reload the app and see your changes!
+The AddressSanitizer and ThreadSanitizer cases pass `-Wno-error=deprecated-literal-operator`, so the `build` case's failure does not stop them.
