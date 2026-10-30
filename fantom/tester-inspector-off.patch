@@ -1,0 +1,13 @@
+diff --git a/private/react-native-fantom/tester/src/main.cpp b/private/react-native-fantom/tester/src/main.cpp
+--- a/private/react-native-fantom/tester/src/main.cpp
++++ b/private/react-native-fantom/tester/src/main.cpp
+@@ -48,6 +48,9 @@ int main(int argc, char* argv[]) {
+   auto config = ReactInstanceConfig{
+       .appId = "com.meta.reactnative.fantom",
+       .deviceName = "RN Fantom",
++      // A Debug build's default starts the inspector, whose thread schedules
++      // JavaScript work while loadScript drains the queue.
++      .enableInspector = false,
+   };
+ 
+   if (AppSettings::inspectorPort.has_value()) {

@@ -25,6 +25,41 @@ add_folly_sanitize_leak() {
     private/react-native-fantom/tester/third-party/folly/CMakeLists.txt
 }
 
+# Starts <count> testers at once on <bundle>, with the arguments yarn fantom gives a test without flags, <rounds> times,
+# and prints each tester that exits non-zero, with how much it printed.
+run_testers_at_once() {
+  local bundle="$1" rounds="$2" count="$3" round slot status failures=0
+  local output=/tmp/testers
+  mkdir -p "$output"
+  for ((round = 1; round <= rounds; round++)); do
+    for ((slot = 1; slot <= count; slot++)); do
+      (
+        status=0
+        private/react-native-fantom/build/tester/fantom_tester --bundlePath "$bundle" --featureFlags '{}' \
+          --minLogLevel error > "$output/$slot.log" 2>&1 || status=$?
+        echo "$status" > "$output/$slot.status"
+      ) &
+    done
+    wait
+    for ((slot = 1; slot <= count; slot++)); do
+      status=$(cat "$output/$slot.status")
+      if [[ $status != 0 ]]; then
+        failures=$((failures + 1))
+        echo "round $round, tester $slot: exit status $status, $(wc -c < "$output/$slot.log") bytes on stdout and stderr"
+      fi
+    done
+  done
+  echo "$((rounds * count)) testers, $failures exited non-zero"
+}
+
+# Prefixes each line read with the time it was read.
+stamp_lines() {
+  local line
+  while IFS= read -r line; do
+    echo "$(date +%T.%3N) $line"
+  done
+}
+
 asan_flags=(
   "CFLAGS=-fsanitize=address -fno-omit-frame-pointer"
   "CXXFLAGS=-fsanitize=address -fno-omit-frame-pointer -Wno-error=deprecated-literal-operator"
@@ -75,6 +110,32 @@ case "$case_name" in
     export CXXFLAGS=-Wno-error=deprecated-literal-operator
     build
     yarn fantom packages/react-native/Libraries/TurboModule/__tests__/TurboModuleLookup-itest.js
+    ;;
+  concurrent-testers-null-runtime)
+    # The stock Debug tester runs View-itest.js once through yarn fantom, which leaves the test's bundle in .out, then
+    # 16 testers at a time on that bundle, as yarn fantom starts them; then the same with the inspector off.
+    export CXXFLAGS=-Wno-error=deprecated-literal-operator
+    build
+    yarn fantom packages/react-native/Libraries/Components/View/__tests__/View-itest.js
+    bundle=$(ls private/react-native-fantom/.out/js-builds/run-*/*-View-itest.js.bundle.js | head -n 1)
+    echo "bundle $bundle"
+    echo "== the stock tester"
+    run_testers_at_once "$bundle" 200 16
+    git apply /reproducer/fantom/tester-inspector-off.patch
+    build
+    echo "== the tester with enableInspector = false"
+    run_testers_at_once "$bundle" 200 16
+    ;;
+  jest-does-not-exit)
+    # One stock Fantom test, each line of its output stamped with the time it was printed, then the same run with
+    # Jest's --detectOpenHandles.
+    export CXXFLAGS=-Wno-error=deprecated-literal-operator
+    build
+    yarn fantom packages/react-native/Libraries/Components/View/__tests__/View-itest.js 2>&1 | stamp_lines
+    echo "$(date +%T.%3N) yarn fantom exited"
+    yarn fantom packages/react-native/Libraries/Components/View/__tests__/View-itest.js --detectOpenHandles 2>&1 |
+      stamp_lines
+    echo "$(date +%T.%3N) yarn fantom --detectOpenHandles exited"
     ;;
   *)
     echo "unknown case $case_name" >&2
