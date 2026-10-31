@@ -162,20 +162,23 @@ case "$case_name" in
     stage "and OS_LINUX kept in glog's config.h"
     ;;
   stale-tester-after-react-common-change)
-    # View-itest.js on the stock tester; then a write through a null pointer added to UIManager::startSurface in
+    # View-itest.js on the stock tester; then a write through a null pointer added to ReactInstance::loadScript in
     # ReactCommon, the tester built again as CI builds it, and View-itest.js again; then buildFantomTester rerun and
     # View-itest.js once more.
     export CXXFLAGS=-Wno-error=deprecated-literal-operator
     view_test=packages/react-native/Libraries/Components/View/__tests__/View-itest.js
     build
     echo "== the stock tester"
+    sha256sum private/react-native-fantom/build/tester/fantom_tester
     yarn fantom "$view_test" 2>&1 | grep --extended-regexp '^(PASS|FAIL)|Command failed|^Tests:' || true
-    git apply /reproducer/fantom/null-write-in-start-surface.patch
-    echo "== UIManager::startSurface writes through a null pointer; yarn workspace @react-native/fantom build"
+    git apply /reproducer/fantom/null-write-in-load-script.patch
+    echo "== ReactInstance::loadScript writes through a null pointer; yarn workspace @react-native/fantom build"
     yarn workspace @react-native/fantom build 2>&1 | grep --extended-regexp 'FantomTester|BUILD' || true
+    sha256sum private/react-native-fantom/build/tester/fantom_tester
     yarn fantom "$view_test" 2>&1 | grep --extended-regexp '^(PASS|FAIL)|Command failed|^Tests:' || true
     echo "== ./gradlew :private:react-native-fantom:buildFantomTester --rerun"
     ./gradlew :private:react-native-fantom:buildFantomTester --rerun 2>&1 | grep --extended-regexp 'FantomTester|BUILD' || true
+    sha256sum private/react-native-fantom/build/tester/fantom_tester
     yarn fantom "$view_test" 2>&1 | grep --extended-regexp '^(PASS|FAIL)|Command failed|^Tests:' || true
     ;;
   *)

@@ -1,0 +1,10 @@
+--- a/packages/react-native/ReactCommon/react/runtime/ReactInstance.cpp
++++ b/packages/react-native/ReactCommon/react/runtime/ReactInstance.cpp
+@@ -247,6 +247,7 @@
+     const std::string& sourceURL,
+     std::function<void(jsi::Runtime& runtime)>&& beforeLoad,
+     std::function<void(jsi::Runtime& runtime)>&& afterLoad) {
++  *static_cast<volatile int*>(nullptr) = 1;
+   std::shared_ptr<const jsi::Buffer> buffer(std::move(script));
+   std::string scriptName = simpleBasename(sourceURL);
+ 
