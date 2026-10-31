@@ -137,6 +137,47 @@ case "$case_name" in
       stamp_lines
     echo "$(date +%T.%3N) yarn fantom --detectOpenHandles exited"
     ;;
+  crash-prints-no-stack)
+    # A Fantom test whose native call writes through a null pointer in faultOnNullWrite, run on the stock tester, then
+    # with InstallFailureSignalHandler in main, then with HAVE_SIGACTION defined in glog's config.h, then with OS_LINUX
+    # kept there as well.
+    export CXXFLAGS=-Wno-error=deprecated-literal-operator
+    git apply /reproducer/fantom/null-write-in-clear-all-images.patch
+    cp /reproducer/fantom/NativeCrash-itest.js private/react-native-fantom/src/__tests__/
+    crash_test=private/react-native-fantom/src/__tests__/NativeCrash-itest.js
+    # buildFantomTester's only input is the tester's CMake build tree, so Gradle calls it up to date after a change to
+    # glog's config.h; --rerun has CMake decide what to rebuild.
+    stage() {
+      build
+      ./gradlew --quiet :private:react-native-fantom:buildFantomTester --rerun
+      echo "== $1"
+      yarn fantom "$crash_test" 2>&1 || echo "yarn fantom exited with status $?"
+    }
+    stage "the stock tester"
+    git apply /reproducer/fantom/install-failure-signal-handler.patch
+    stage "InstallFailureSignalHandler in main"
+    git apply /reproducer/fantom/glog-config-sigaction.patch
+    stage "and HAVE_SIGACTION in glog's config.h"
+    git apply /reproducer/fantom/glog-config-keep-os-linux.patch
+    stage "and OS_LINUX kept in glog's config.h"
+    ;;
+  stale-tester-after-react-common-change)
+    # View-itest.js on the stock tester; then a write through a null pointer added to UIManager::startSurface in
+    # ReactCommon, the tester built again as CI builds it, and View-itest.js again; then buildFantomTester rerun and
+    # View-itest.js once more.
+    export CXXFLAGS=-Wno-error=deprecated-literal-operator
+    view_test=packages/react-native/Libraries/Components/View/__tests__/View-itest.js
+    build
+    echo "== the stock tester"
+    yarn fantom "$view_test" 2>&1 | grep --extended-regexp '^(PASS|FAIL)|Command failed|^Tests:' || true
+    git apply /reproducer/fantom/null-write-in-start-surface.patch
+    echo "== UIManager::startSurface writes through a null pointer; yarn workspace @react-native/fantom build"
+    yarn workspace @react-native/fantom build 2>&1 | grep --extended-regexp 'FantomTester|BUILD' || true
+    yarn fantom "$view_test" 2>&1 | grep --extended-regexp '^(PASS|FAIL)|Command failed|^Tests:' || true
+    echo "== ./gradlew :private:react-native-fantom:buildFantomTester --rerun"
+    ./gradlew :private:react-native-fantom:buildFantomTester --rerun 2>&1 | grep --extended-regexp 'FantomTester|BUILD' || true
+    yarn fantom "$view_test" 2>&1 | grep --extended-regexp '^(PASS|FAIL)|Command failed|^Tests:' || true
+    ;;
   *)
     echo "unknown case $case_name" >&2
     exit 2

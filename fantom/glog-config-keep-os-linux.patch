@@ -1,0 +1,12 @@
+--- a/packages/react-native/ReactAndroid/src/main/jni/third-party/glog/config.h
++++ b/packages/react-native/ReactAndroid/src/main/jni/third-party/glog/config.h
+@@ -180,7 +180,9 @@
+ 
+ 
+ /* TODO(vjn/dreiss): revisit these when use the android-21 (or newer) NDK platform. */
++#if defined(__ANDROID__)
+ #undef HAVE_SYSCALL_H
+ #undef HAVE_SYS_SYSCALL_H
+ #undef OS_LINUX
++#endif
+ #undef OS_MACOSX

@@ -1,0 +1,13 @@
+--- a/packages/react-native/ReactAndroid/src/main/jni/third-party/glog/config.h
++++ b/packages/react-native/ReactAndroid/src/main/jni/third-party/glog/config.h
+@@ -64,6 +64,10 @@
+ /* Define if you have the `sigaltstack' function */
+ #define HAVE_SIGALTSTACK 1
+ 
++#if !defined(__ANDROID__)
++#define HAVE_SIGACTION 1
++#endif
++
+ /* Define to 1 if you have the <stdint.h> header file. */
+ #define HAVE_STDINT_H 1
+ 

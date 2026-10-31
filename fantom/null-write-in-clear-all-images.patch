@@ -1,0 +1,15 @@
+--- a/private/react-native-fantom/tester/src/NativeFantom.cpp
++++ b/private/react-native-fantom/tester/src/NativeFantom.cpp
+@@ -333,7 +333,12 @@
+   appDelegate_.mountingManager_->imageLoader_->clearImage(uri);
+ }
+ 
++[[gnu::noinline]] static void faultOnNullWrite() {
++  *static_cast<volatile int*>(nullptr) = 1;
++}
++
+ void NativeFantom::clearAllImages(jsi::Runtime& /*rt*/) {
++  faultOnNullWrite();
+   appDelegate_.mountingManager_->imageLoader_->clearAllImages();
+ }
+ 
