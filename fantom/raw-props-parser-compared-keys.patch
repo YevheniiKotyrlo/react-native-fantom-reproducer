@@ -1,0 +1,44 @@
+diff --git a/packages/react-native/ReactCommon/react/renderer/core/RawPropsParser.cpp b/packages/react-native/ReactCommon/react/renderer/core/RawPropsParser.cpp
+index bef5aa2..9c3a19b 100644
+--- a/packages/react-native/ReactCommon/react/renderer/core/RawPropsParser.cpp
++++ b/packages/react-native/ReactCommon/react/renderer/core/RawPropsParser.cpp
+@@ -12,6 +12,9 @@
+ 
+ #include <glog/logging.h>
+ 
++#include <atomic>
++#include <cstdint>
++
+ namespace facebook::react {
+ 
+ namespace {
+@@ -25,6 +28,13 @@ inline bool keysEqual(std::string_view a, std::string_view b) noexcept {
+ 
+ } // namespace
+ 
++// Count the reads `at` answers once the parser is prepared, and the keys it
++// compares their names with, for the reproducer to print.
++__attribute__((visibility("default"))) std::atomic<std::uint64_t>
++    reproducerReads{0};
++__attribute__((visibility("default"))) std::atomic<std::uint64_t>
++    reproducerComparedKeys{0};
++
+ // During parser initialization, Props structs are used to parse
+ // "fake"/empty objects, and `at` is called repeatedly which tells us
+ // which props are accessed during parsing, and in which order.
+@@ -76,6 +86,7 @@ const RawValue* RawPropsParser::at(
+ #ifdef REACT_NATIVE_DEBUG
+   bool resetLoop = false;
+ #endif
++  reproducerReads.fetch_add(1, std::memory_order_relaxed);
+   do {
+     rawProps.keyIndexCursor_++;
+ 
+@@ -92,6 +103,7 @@ const RawValue* RawPropsParser::at(
+ #endif
+       rawProps.keyIndexCursor_ = 0;
+     }
++    reproducerComparedKeys.fetch_add(1, std::memory_order_relaxed);
+   } while (!keysEqual(key, keys_[rawProps.keyIndexCursor_]));
+ 
+   auto valueIndex = rawProps.keyIndexToValueIndex_[rawProps.keyIndexCursor_];

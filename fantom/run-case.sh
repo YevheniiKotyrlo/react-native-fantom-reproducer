@@ -181,6 +181,28 @@ case "$case_name" in
     sha256sum private/react-native-fantom/build/tester/fantom_tester
     yarn fantom "$view_test" 2>&1 | grep --extended-regexp '^(PASS|FAIL)|Command failed|^Tests:' || true
     ;;
+  raw-props-out-of-order-read)
+    # fantom/RawPropsOrder.cpp, built in the tester's CMake tree against the tester's libraries, with
+    # raw-props-parser-compared-keys.patch counting what RawPropsParser::at does: it parses one set of raw props through
+    # View's props alone, through a props struct that reads a key of its own after them and through one that reads
+    # width again after them.
+    export CXXFLAGS=-Wno-error=deprecated-literal-operator
+    git apply /reproducer/fantom/raw-props-parser-compared-keys.patch
+    cat >> private/react-native-fantom/tester/CMakeLists.txt <<'CMAKE'
+
+add_executable(raw_props_order /reproducer/fantom/RawPropsOrder.cpp)
+get_target_property(fantom_tester_libraries fantom_tester LINK_LIBRARIES)
+target_link_libraries(raw_props_order PRIVATE ${fantom_tester_libraries})
+CMAKE
+    build
+    tree=$(dirname "$(grep -l '^CMAKE_PROJECT_NAME:STATIC=fantom_tester$' $(find private/react-native-fantom/build -name CMakeCache.txt))")
+    if ! cmake --build "$tree" --target raw_props_order > /tmp/raw_props_order-build.log 2>&1; then
+      grep --extended-regexp 'error:|undefined' /tmp/raw_props_order-build.log | head -n 40
+      tail -n 20 /tmp/raw_props_order-build.log
+      exit 1
+    fi
+    "$tree/raw_props_order"
+    ;;
   *)
     echo "unknown case $case_name" >&2
     exit 2
