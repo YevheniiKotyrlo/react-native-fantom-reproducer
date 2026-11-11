@@ -145,6 +145,23 @@ case "$case_name" in
       verdict 0 "LockedCommitMount-itest.js passes with no ThreadSanitizer report"
     verdict 2 "LockedCommitMount-itest.js failed another way"
     ;;
+  skia-clang-23)
+    # Fantom's CI build with Clang 23 and the Skia revision the tester pins, nlohmann_json's warning kept from being an
+    # error (#59667); no SKCMS_NO_RUNTIME_CPU_DETECTION here.
+    skia=private/react-native-fantom/tester/third-party/skia/CMakeLists.txt
+    [ -f "$skia" ] || verdict 2 "this React Native builds no Skia into the tester"
+    skia_version=$(grep --only-matching --perl-regexp '(?<=val skiaVersion = ")[0-9a-f]+' private/react-native-fantom/build.gradle.kts || true)
+    echo "Skia $skia_version"
+    (cd /tmp && npx --yes @react-native-community/cli@latest info) || echo "cli info exited with status $?"
+    export CXXFLAGS=-Wno-error=deprecated-literal-operator
+    yarn workspace @react-native/fantom build && verdict 0 "the tester builds with Clang 23, its Skia included"
+    errors=$(grep --no-filename 'error:' private/react-native-fantom/build/reports/*.log || true)
+    head -n 20 <<<"$errors"
+    if grep -q "skcms/src/Transform_inl.h:[0-9]*:[0-9]*: error: use of undeclared identifier '__builtin_ia32_vcvtph2ps256'" <<<"$errors"; then
+      verdict 1 "the skcms of the tester's Skia calls __builtin_ia32_vcvtph2ps256, which Clang 23 does not declare"
+    fi
+    verdict 2 "the tester failed to build another way"
+    ;;
   cxx-turbomodule-per-lookup)
     # A Fantom test that looks one TurboModule up twice.
     mkdir -p packages/react-native/Libraries/TurboModule/__tests__
