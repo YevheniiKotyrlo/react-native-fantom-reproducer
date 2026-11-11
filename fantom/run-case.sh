@@ -11,12 +11,35 @@ echo "react-native $(git rev-parse HEAD), committed $(git log -1 --format=%cI)"
 clang --version | head -n 1
 yarn install --frozen-lockfile --non-interactive --silent
 
+# Prints the summary line and exits with the verdict: 1 while the defect shows, 0 once it is gone, 2 for anything else.
+verdict() {
+  echo "SUMMARY: $2"
+  exit "$1"
+}
+
+# Clang 23 declares no __builtin_ia32_vcvtph2ps256, which the AVX2 path of the skcms in the tester's pinned Skia calls.
+skip_skcms_runtime_cpu_detection() {
+  local skia=private/react-native-fantom/tester/third-party/skia/CMakeLists.txt
+  [ -f "$skia" ] || return 0
+  sed -i 's#\\"-ffp-contract=off\\"#&,\\"-DSKCMS_NO_RUNTIME_CPU_DETECTION\\"#' "$skia"
+  grep -q SKCMS_NO_RUNTIME_CPU_DETECTION "$skia" || verdict 2 "the Skia build arguments changed, so skcms keeps its AVX2 path"
+}
+
 # Gradle writes the tester's compiler output to its reports, so a failed build prints the errors there.
 build() {
+  skip_skcms_runtime_cpu_detection
   if ! yarn workspace @react-native/fantom build; then
     grep --no-filename --extended-regexp 'error:|undefined (symbol|reference)' private/react-native-fantom/build/reports/*.log | head -n 40
-    exit 1
+    return 1
   fi
+}
+
+# Runs one Fantom test, printing its output into fantom_output and its exit status into fantom_status.
+run_fantom() {
+  fantom_status=0
+  fantom_output=$(yarn fantom "$1" 2>&1) || fantom_status=$?
+  echo "$fantom_output"
+  echo "yarn fantom exited with status $fantom_status"
 }
 
 # folly's leak annotations, which AddressSanitizer builds of folly call, are defined in SanitizeLeak.cpp.
@@ -69,28 +92,41 @@ asan_flags=(
 case "$case_name" in
   build)
     # Fantom's CI build, with the latest Clang.
-    build
+    build || exit 1
     ;;
   asan-folly-sanitize-leak)
     # The same build under AddressSanitizer, with nlohmann_json's warning kept from being an error.
     export "${asan_flags[@]}"
-    build
+    build || exit 1
     ;;
   asan-jsi-twice)
     # The AddressSanitizer build of Hermes and the tester, with folly's SanitizeLeak.cpp added, then one stock Fantom test.
     add_folly_sanitize_leak
     export "${asan_flags[@]}"
-    build
-    yarn fantom packages/react-native/Libraries/Components/View/__tests__/View-itest.js
+    build || verdict 2 "the tester did not build"
+    run_fantom packages/react-native/Libraries/Components/View/__tests__/View-itest.js
+    [ "$fantom_status" -eq 0 ] && verdict 0 "View-itest.js passes under AddressSanitizer: one copy of jsi"
+    if grep -q 'AddressSanitizer: odr-violation' <<<"$fantom_output" && grep -q 'jsi\.cpp in .*/libhermesvm\.so' <<<"$fantom_output" &&
+      grep -q 'jsi\.cpp in .*/ReactCommon/jsi/libjsi\.so' <<<"$fantom_output"; then
+      verdict 1 "odr-violation: libhermesvm.so and the tester's libjsi.so each define jsi's globals"
+    fi
+    verdict 2 "View-itest.js failed another way"
     ;;
   asan-jsi-duplicates-folly)
     # Hermes built first without the sanitizer, then the tester under AddressSanitizer with folly's SanitizeLeak.cpp
     # added, then one stock Fantom test.
     add_folly_sanitize_leak
-    ./gradlew --quiet :private:react-native-fantom:prepareHermesDependencies
+    ./gradlew --quiet :private:react-native-fantom:prepareHermesDependencies || verdict 2 "Hermes did not build"
     export "${asan_flags[@]}"
-    build
-    yarn fantom packages/react-native/Libraries/Components/View/__tests__/View-itest.js
+    build || verdict 2 "the tester did not build"
+    run_fantom packages/react-native/Libraries/Components/View/__tests__/View-itest.js
+    [ "$fantom_status" -eq 0 ] && verdict 0 "View-itest.js passes under AddressSanitizer: one copy of folly and double-conversion"
+    if grep -q 'AddressSanitizer: odr-violation' <<<"$fantom_output" &&
+      grep -Eq "'(double_conversion|folly)::.* in .*/fantom_tester$" <<<"$fantom_output" &&
+      grep -Eq "'(double_conversion|folly)::.* in .*/ReactCommon/jsi/libjsi\.so$" <<<"$fantom_output"; then
+      verdict 1 "odr-violation: fantom_tester and libjsi.so each define folly's or double-conversion's globals"
+    fi
+    verdict 2 "View-itest.js failed another way"
     ;;
   tsan-mount-inside-locked-commit)
     # The ThreadSanitizer build of Hermes and the tester, the tester with a commit hook that lands a commit of the same
@@ -100,29 +136,41 @@ case "$case_name" in
     cp /reproducer/fantom/LockedCommitMount-itest.js packages/react-native/Libraries/Components/View/__tests__/
     export "CFLAGS=-fsanitize=thread" "CXXFLAGS=-fsanitize=thread -Wno-error=deprecated-literal-operator" \
       "LDFLAGS=-fuse-ld=lld -fsanitize=thread"
-    build
-    yarn fantom packages/react-native/Libraries/Components/View/__tests__/LockedCommitMount-itest.js
+    build || verdict 2 "the tester did not build"
+    run_fantom packages/react-native/Libraries/Components/View/__tests__/LockedCommitMount-itest.js
+    if grep -q 'ThreadSanitizer: lock-order-inversion' <<<"$fantom_output" && grep -q 'UIManager::reportMount' <<<"$fantom_output"; then
+      verdict 1 "lock-order-inversion: the tester reports the mount, taking ShadowTreeRegistry's lock, inside the locked commit"
+    fi
+    [ "$fantom_status" -eq 0 ] && ! grep -q 'WARNING: ThreadSanitizer' <<<"$fantom_output" &&
+      verdict 0 "LockedCommitMount-itest.js passes with no ThreadSanitizer report"
+    verdict 2 "LockedCommitMount-itest.js failed another way"
     ;;
   cxx-turbomodule-per-lookup)
     # A Fantom test that looks one TurboModule up twice.
     mkdir -p packages/react-native/Libraries/TurboModule/__tests__
     cp /reproducer/fantom/TurboModuleLookup-itest.js packages/react-native/Libraries/TurboModule/__tests__/
     export CXXFLAGS=-Wno-error=deprecated-literal-operator
-    build
-    yarn fantom packages/react-native/Libraries/TurboModule/__tests__/TurboModuleLookup-itest.js
+    build || verdict 2 "the tester did not build"
+    run_fantom packages/react-native/Libraries/TurboModule/__tests__/TurboModuleLookup-itest.js
+    [ "$fantom_status" -eq 0 ] && verdict 0 "both lookups of SourceCode answer the one module"
+    if grep -q 'answers the same module for every lookup of one name' <<<"$fantom_output" &&
+      grep -q 'Expected true but received false' <<<"$fantom_output"; then
+      verdict 1 "two lookups of SourceCode answer two different modules on the cxx platform"
+    fi
+    verdict 2 "TurboModuleLookup-itest.js failed another way"
     ;;
   concurrent-testers-null-runtime)
     # The stock Debug tester runs View-itest.js once through yarn fantom, which leaves the test's bundle in .out, then
     # 16 testers at a time on that bundle, as yarn fantom starts them; then the same with the inspector off.
     export CXXFLAGS=-Wno-error=deprecated-literal-operator
-    build
+    build || exit 1
     yarn fantom packages/react-native/Libraries/Components/View/__tests__/View-itest.js
     bundle=$(ls private/react-native-fantom/.out/js-builds/run-*/*-View-itest.js.bundle.js | head -n 1)
     echo "bundle $bundle"
     echo "== the stock tester"
     run_testers_at_once "$bundle" 200 16
     git apply /reproducer/fantom/tester-inspector-off.patch
-    build
+    build || exit 1
     echo "== the tester with enableInspector = false"
     run_testers_at_once "$bundle" 200 16
     ;;
@@ -130,7 +178,7 @@ case "$case_name" in
     # One stock Fantom test, each line of its output stamped with the time it was printed, then the same run with
     # Jest's --detectOpenHandles.
     export CXXFLAGS=-Wno-error=deprecated-literal-operator
-    build
+    build || exit 1
     yarn fantom packages/react-native/Libraries/Components/View/__tests__/View-itest.js 2>&1 | stamp_lines
     echo "$(date +%T.%3N) yarn fantom exited"
     yarn fantom packages/react-native/Libraries/Components/View/__tests__/View-itest.js --detectOpenHandles 2>&1 |
@@ -148,7 +196,7 @@ case "$case_name" in
     # buildFantomTester's only input is the tester's CMake build tree, so Gradle calls it up to date after a change to
     # glog's config.h; --rerun has CMake decide what to rebuild.
     stage() {
-      build
+      build || exit 1
       ./gradlew --quiet :private:react-native-fantom:buildFantomTester --rerun
       echo "== $1"
       yarn fantom "$crash_test" 2>&1 || echo "yarn fantom exited with status $?"
@@ -167,7 +215,7 @@ case "$case_name" in
     # View-itest.js once more.
     export CXXFLAGS=-Wno-error=deprecated-literal-operator
     view_test=packages/react-native/Libraries/Components/View/__tests__/View-itest.js
-    build
+    build || exit 1
     echo "== the stock tester"
     sha256sum private/react-native-fantom/build/tester/fantom_tester
     yarn fantom "$view_test" 2>&1 | grep --extended-regexp '^(PASS|FAIL)|Command failed|^Tests:' || true
@@ -194,7 +242,7 @@ add_executable(raw_props_order /reproducer/fantom/RawPropsOrder.cpp)
 get_target_property(fantom_tester_libraries fantom_tester LINK_LIBRARIES)
 target_link_libraries(raw_props_order PRIVATE ${fantom_tester_libraries})
 CMAKE
-    build
+    build || exit 1
     tree=$(dirname "$(grep -l '^CMAKE_PROJECT_NAME:STATIC=fantom_tester$' $(find private/react-native-fantom/build -name CMakeCache.txt))")
     if ! cmake --build "$tree" --target raw_props_order > /tmp/raw_props_order-build.log 2>&1; then
       grep --extended-regexp 'error:|undefined' /tmp/raw_props_order-build.log | head -n 40
