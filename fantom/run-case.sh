@@ -172,7 +172,6 @@ case "$case_name" in
     [ -f "$skia" ] || verdict 2 "this React Native builds no Skia into the tester"
     skia_version=$(grep --only-matching --perl-regexp '(?<=val skiaVersion = ")[0-9a-f]+' private/react-native-fantom/build.gradle.kts || true)
     echo "Skia $skia_version"
-    (cd /tmp && npx --yes @react-native-community/cli@latest info) || echo "cli info exited with status $?"
     export CXXFLAGS=-Wno-error=deprecated-literal-operator
     yarn workspace @react-native/fantom build && verdict 0 "the tester builds with Clang 23, its Skia included"
     errors=$(grep --no-filename 'error:' private/react-native-fantom/build/reports/*.log || true)
