@@ -94,6 +94,26 @@ case "$case_name" in
     # Fantom's CI build, with the latest Clang.
     build || exit 1
     ;;
+  hermes-source-tarball)
+    # Hermes's source tarball downloaded, unpacked and configured as Fantom's build does before it builds Hermes from
+    # source; enableHermesBuild is the task through which Fantom's build turns the Hermes tasks on.
+    trap 'verdict 2 "a step failed: $BASH_COMMAND"' ERR
+    hermes_task=:packages:react-native:ReactAndroid:hermes-engine:configureBuildForHermesWithDebugger
+    hermes_status=0
+    hermes_output=$(./gradlew --console=plain :private:react-native-fantom:enableHermesBuild "$hermes_task" 2>&1) ||
+      hermes_status=$?
+    grep -E '^> Task :packages:react-native:ReactAndroid:hermes-engine:|CMake Error|^BUILD (SUCCESSFUL|FAILED)' <<<"$hermes_output" || true
+    hermes_dir=packages/react-native/sdks/hermes
+    echo "== the CMakeLists.txt files in $hermes_dir, two levels deep"
+    find "$hermes_dir" -maxdepth 2 -name CMakeLists.txt
+    [ "$hermes_status" -eq 0 ] && verdict 0 "configureBuildForHermesWithDebugger finds Hermes's CMakeLists.txt in $hermes_dir"
+    if grep -q 'does not appear to contain CMakeLists.txt' <<<"$hermes_output"; then
+      nested=$(find "$hermes_dir" -mindepth 2 -maxdepth 2 -name CMakeLists.txt)
+      verdict 1 "configureBuildForHermesWithDebugger finds no CMakeLists.txt in $hermes_dir: the tarball's top folder was not stripped, so the sources are in ${nested%/CMakeLists.txt}"
+    fi
+    tail -n 30 <<<"$hermes_output"
+    verdict 2 "configureBuildForHermesWithDebugger failed another way"
+    ;;
   asan-folly-sanitize-leak)
     # The same build under AddressSanitizer, with nlohmann_json's warning kept from being an error.
     export "${asan_flags[@]}"
@@ -205,7 +225,8 @@ case "$case_name" in
   crash-prints-no-stack)
     # A Fantom test whose native call writes through a null pointer in faultOnNullWrite, run on the stock tester, then
     # with InstallFailureSignalHandler in main, then with HAVE_SIGACTION defined in glog's config.h, then with OS_LINUX
-    # kept there as well.
+    # kept there as well. The verdict reads the stock tester's report.
+    trap 'verdict 2 "a step failed: $BASH_COMMAND"' ERR
     export CXXFLAGS=-Wno-error=deprecated-literal-operator
     git apply /reproducer/fantom/null-write-in-clear-all-images.patch
     cp /reproducer/fantom/NativeCrash-itest.js private/react-native-fantom/src/__tests__/
@@ -213,18 +234,26 @@ case "$case_name" in
     # buildFantomTester's only input is the tester's CMake build tree, so Gradle calls it up to date after a change to
     # glog's config.h; --rerun has CMake decide what to rebuild.
     stage() {
-      build || exit 1
+      build || verdict 2 "the tester did not build"
       ./gradlew --quiet :private:react-native-fantom:buildFantomTester --rerun
       echo "== $1"
-      yarn fantom "$crash_test" 2>&1 || echo "yarn fantom exited with status $?"
+      run_fantom "$crash_test"
     }
     stage "the stock tester"
+    stock_output=$fantom_output
     git apply /reproducer/fantom/install-failure-signal-handler.patch
     stage "InstallFailureSignalHandler in main"
     git apply /reproducer/fantom/glog-config-sigaction.patch
     stage "and HAVE_SIGACTION in glog's config.h"
     git apply /reproducer/fantom/glog-config-keep-os-linux.patch
     stage "and OS_LINUX kept in glog's config.h"
+    patched_names_frame=no
+    grep -q 'faultOnNullWrite()' <<<"$fantom_output" && patched_names_frame=yes
+    grep -q 'faultOnNullWrite()' <<<"$stock_output" && verdict 0 "the stock tester's crash report names faultOnNullWrite()"
+    if grep -q 'signal: SIGSEGV' <<<"$stock_output" && ! grep -qF '*** SIGSEGV' <<<"$stock_output"; then
+      verdict 1 "the stock tester dies of SIGSEGV and prints no stack; with the three patches, the report names faultOnNullWrite(): $patched_names_frame"
+    fi
+    verdict 2 "the stock tester's run ended another way"
     ;;
   stale-tester-after-react-common-change)
     # View-itest.js on the stock tester; then a write through a null pointer added to ReactInstance::loadScript in

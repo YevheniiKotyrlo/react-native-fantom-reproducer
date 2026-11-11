@@ -13,6 +13,7 @@ It needs Docker and nothing else. The image is defined by `fantom/Dockerfile`, t
 | Case | What it runs | What it shows |
 | --- | --- | --- |
 | `build` | Fantom's CI build | on `main`, `nlohmann/json.hpp` 3.11.2 fails `-Wdeprecated-literal-operator` under `-Werror`; on `0.88-stable`, Hermes's source build finds no `CMakeLists.txt` in the unpacked tarball |
+| `hermes-source-tarball` | `configureBuildForHermesWithDebugger`, which downloads Hermes's source tarball, unpacks it into `packages/react-native/sdks/hermes` and configures it with CMake | on `0.88-stable`, the tarball's top folder is `meta-hermes-<sha>`, which `unzipHermes` does not strip, so CMake finds no `CMakeLists.txt` in `sdks/hermes` |
 | `asan-folly-sanitize-leak` | the build under AddressSanitizer | the tester's link misses `folly::detail::annotate_object_collected_impl` and `annotate_object_leaked_impl`, since Fantom's folly omits `SanitizeLeak.cpp` |
 | `asan-jsi-twice` | Hermes and the tester under AddressSanitizer, `SanitizeLeak.cpp` added, then `View-itest.js` | an odr-violation: `libhermesvm.so` and the tester's `libjsi.so` each define jsi's globals |
 | `asan-jsi-duplicates-folly` | Hermes built plain, the tester under AddressSanitizer, `SanitizeLeak.cpp` added, then `View-itest.js` | an odr-violation: `libjsi.so` carries its own copy of folly and double-conversion beside the tester's |
@@ -28,3 +29,5 @@ It needs Docker and nothing else. The image is defined by `fantom/Dockerfile`, t
 The AddressSanitizer and ThreadSanitizer cases pass `-Wno-error=deprecated-literal-operator`, so the `build` case's failure does not stop them. Every build adds `-DSKCMS_NO_RUNTIME_CPU_DETECTION` to the tester's Skia build arguments: the AVX2 path of the skcms in the Skia revision the tester pins calls `__builtin_ia32_vcvtph2ps256`, which Clang 23 does not declare.
 
 `asan-jsi-twice`, `asan-jsi-duplicates-folly`, `tsan-mount-inside-locked-commit` and `cxx-turbomodule-per-lookup` end with a `SUMMARY:` line and exit 1 while their defect shows, 0 once the test passes with no sanitizer report, and 2 when the tester does not build or the test fails another way.
+
+`hermes-source-tarball` exits 1 while CMake finds no `CMakeLists.txt` in `sdks/hermes`, 0 once the configure succeeds, and 2 when it fails another way. `crash-prints-no-stack` exits 1 while the stock tester dies of SIGSEGV with no stack on stderr, 0 once its report names `faultOnNullWrite()`, and 2 when a step fails; its summary also says whether the report names the frame with the three patches applied.
