@@ -195,6 +195,20 @@ case "$case_name" in
     fi
     verdict 2 "TurboModuleLookup-itest.js failed another way"
     ;;
+  has-view-manager-config)
+    # A Fantom test that renders View, then asks UIManager.hasViewManagerConfig('View').
+    mkdir -p packages/react-native/Libraries/ReactNative/__tests__
+    cp /reproducer/fantom/HasViewManagerConfig-itest.js packages/react-native/Libraries/ReactNative/__tests__/
+    export CXXFLAGS=-Wno-error=deprecated-literal-operator
+    build || verdict 2 "the tester did not build"
+    run_fantom packages/react-native/Libraries/ReactNative/__tests__/HasViewManagerConfig-itest.js
+    [ "$fantom_status" -eq 0 ] && verdict 0 "View renders and UIManager.hasViewManagerConfig('View') answers true"
+    if grep -q '✓ renders View' <<<"$fantom_output" && grep -q '✕ answers true for View' <<<"$fantom_output" &&
+      grep -q 'Expected true but received false' <<<"$fantom_output"; then
+      verdict 1 "View renders, but UIManager.hasViewManagerConfig('View') answers false"
+    fi
+    verdict 2 "HasViewManagerConfig-itest.js failed another way"
+    ;;
   concurrent-testers-null-runtime)
     # The stock Debug tester runs View-itest.js once through yarn fantom, which leaves the test's bundle in .out, then
     # 16 testers at a time on that bundle, as yarn fantom starts them; then the same with the inspector off.
