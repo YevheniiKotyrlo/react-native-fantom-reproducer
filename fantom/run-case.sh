@@ -7,7 +7,9 @@ ref="$2"
 
 git clone --quiet --depth 1 --branch "$ref" https://github.com/react/react-native /react-native
 cd /react-native
-echo "react-native $(git rev-parse HEAD), committed $(git log -1 --format=%cI)"
+head_commit=$(git rev-parse HEAD)
+committed=$(git log -1 --format=%cI)
+echo "react-native $head_commit, committed $committed"
 clang --version | head -n 1
 yarn install --frozen-lockfile --non-interactive --silent
 
@@ -51,7 +53,7 @@ add_folly_sanitize_leak() {
 # Starts <count> testers at once on <bundle>, with the arguments yarn fantom gives a test without flags, <rounds> times,
 # and prints each tester that exits non-zero, with how much it printed.
 run_testers_at_once() {
-  local bundle="$1" rounds="$2" count="$3" round slot status failures=0
+  local bundle="$1" rounds="$2" count="$3" round slot status printed failures=0
   local output=/tmp/testers
   mkdir -p "$output"
   for ((round = 1; round <= rounds; round++)); do
@@ -68,18 +70,26 @@ run_testers_at_once() {
       status=$(cat "$output/$slot.status")
       if [[ $status != 0 ]]; then
         failures=$((failures + 1))
-        echo "round $round, tester $slot: exit status $status, $(wc -c < "$output/$slot.log") bytes on stdout and stderr"
+        printed=$(wc -c < "$output/$slot.log")
+        echo "round $round, tester $slot: exit status $status, $printed bytes on stdout and stderr"
       fi
     done
   done
   echo "$((rounds * count)) testers, $failures exited non-zero"
 }
 
+# Prints <line> after the time it is printed at.
+stamp_line() {
+  local stamp
+  stamp=$(date +%T.%3N)
+  echo "$stamp $1"
+}
+
 # Prefixes each line read with the time it was read.
 stamp_lines() {
   local line
   while IFS= read -r line; do
-    echo "$(date +%T.%3N) $line"
+    stamp_line "$line"
   done
 }
 
@@ -209,13 +219,62 @@ case "$case_name" in
     fi
     verdict 2 "HasViewManagerConfig-itest.js failed another way"
     ;;
+  infinite-viewport)
+    # A View rendered in a root of the default viewport, then in a root created with viewportHeight: Infinity, then in
+    # one created with viewportWidth: Infinity, each test in a file of its own, since an abort fails every test of its
+    # file.
+    view_tests=packages/react-native/Libraries/Components/View/__tests__
+    cp /reproducer/fantom/FiniteViewport-itest.js /reproducer/fantom/InfiniteViewportHeight-itest.js \
+      /reproducer/fantom/InfiniteViewportWidth-itest.js "$view_tests/"
+    export CXXFLAGS=-Wno-error=deprecated-literal-operator
+    build || verdict 2 "the tester did not build"
+    run_fantom "$view_tests/FiniteViewport-itest.js"
+    [ "$fantom_status" -eq 0 ] || verdict 2 "FiniteViewport-itest.js failed, so the tester lays out no root at all"
+    # Prints how the last test, of a root created with {<option>: Infinity}, ended for its infinite <side>: it passed,
+    # createRoot threw an error naming the option, the tester aborted at the assertion on that side's minimum size, or
+    # it failed another way.
+    infinite_side_outcome() {
+      if [ "$fantom_status" -eq 0 ]; then
+        echo passes
+      elif grep -q 'signal: SIGABRT' <<<"$fantom_output"; then
+        if grep -qF "react_native_assert failure: !std::isinf(minimumSize.$1)" <<<"$fantom_output"; then
+          echo aborts
+        else
+          echo fails
+        fi
+      elif grep -q "Error: .*$2" <<<"$fantom_output" && grep -q 'at .*createRoot' <<<"$fantom_output"; then
+        echo refuses
+      else
+        echo fails
+      fi
+    }
+    # Prints what <outcome> means for the root created with {<option>: Infinity}, <side> being its infinite size.
+    infinite_side_summary() {
+      case "$1" in
+        passes) echo "createRoot({$2: Infinity}) lays out its View" ;;
+        refuses) echo "createRoot({$2: Infinity}) throws an error naming $2" ;;
+        aborts) echo "createRoot({$2: Infinity}) aborts the tester with SIGABRT at !std::isinf(minimumSize.$3)" ;;
+        fails) echo "createRoot({$2: Infinity}) fails another way" ;;
+      esac
+    }
+    run_fantom "$view_tests/InfiniteViewportHeight-itest.js"
+    height=$(infinite_side_outcome height viewportHeight)
+    run_fantom "$view_tests/InfiniteViewportWidth-itest.js"
+    width=$(infinite_side_outcome width viewportWidth)
+    height_summary=$(infinite_side_summary "$height" viewportHeight height)
+    width_summary=$(infinite_side_summary "$width" viewportWidth width)
+    summary="$height_summary; $width_summary"
+    [[ $height =~ ^(passes|refuses)$ && $width =~ ^(passes|refuses)$ ]] && verdict 0 "$summary"
+    [ "$height" = aborts ] || [ "$width" = aborts ] && verdict 1 "$summary"
+    verdict 2 "$summary"
+    ;;
   concurrent-testers-null-runtime)
     # The stock Debug tester runs View-itest.js once through yarn fantom, which leaves the test's bundle in .out, then
     # 16 testers at a time on that bundle, as yarn fantom starts them; then the same with the inspector off.
     export CXXFLAGS=-Wno-error=deprecated-literal-operator
     build || exit 1
     yarn fantom packages/react-native/Libraries/Components/View/__tests__/View-itest.js
-    bundle=$(ls private/react-native-fantom/.out/js-builds/run-*/*-View-itest.js.bundle.js | head -n 1)
+    bundle=$(find private/react-native-fantom/.out/js-builds -path '*/run-*/*-View-itest.js.bundle.js' -print -quit)
     echo "bundle $bundle"
     echo "== the stock tester"
     run_testers_at_once "$bundle" 200 16
@@ -230,10 +289,10 @@ case "$case_name" in
     export CXXFLAGS=-Wno-error=deprecated-literal-operator
     build || exit 1
     yarn fantom packages/react-native/Libraries/Components/View/__tests__/View-itest.js 2>&1 | stamp_lines
-    echo "$(date +%T.%3N) yarn fantom exited"
+    stamp_line "yarn fantom exited"
     yarn fantom packages/react-native/Libraries/Components/View/__tests__/View-itest.js --detectOpenHandles 2>&1 |
       stamp_lines
-    echo "$(date +%T.%3N) yarn fantom --detectOpenHandles exited"
+    stamp_line "yarn fantom --detectOpenHandles exited"
     ;;
   crash-prints-no-stack)
     # A Fantom test whose native call writes through a null pointer in faultOnNullWrite, run on the stock tester, then
@@ -302,7 +361,9 @@ get_target_property(fantom_tester_libraries fantom_tester LINK_LIBRARIES)
 target_link_libraries(raw_props_order PRIVATE ${fantom_tester_libraries})
 CMAKE
     build || exit 1
-    tree=$(dirname "$(grep -l '^CMAKE_PROJECT_NAME:STATIC=fantom_tester$' $(find private/react-native-fantom/build -name CMakeCache.txt))")
+    tester_cache=$(find private/react-native-fantom/build -name CMakeCache.txt \
+      -exec grep -l '^CMAKE_PROJECT_NAME:STATIC=fantom_tester$' {} +)
+    tree=$(dirname "$tester_cache")
     if ! cmake --build "$tree" --target raw_props_order > /tmp/raw_props_order-build.log 2>&1; then
       grep --extended-regexp 'error:|undefined' /tmp/raw_props_order-build.log | head -n 40
       tail -n 20 /tmp/raw_props_order-build.log
