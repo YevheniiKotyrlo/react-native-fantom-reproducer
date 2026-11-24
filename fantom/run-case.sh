@@ -268,6 +268,25 @@ case "$case_name" in
     [ "$height" = aborts ] || [ "$width" = aborts ] && verdict 1 "$summary"
     verdict 2 "$summary"
     ;;
+  hit-slop-content-bounds)
+    # A 100x100 View holding a 40x40 View, then a 40x40 ScrollView, each with hitSlop={{right: 80}}, and the View's
+    # layoutMetrics-overflowInset read from the rendered output.
+    view_tests=packages/react-native/Libraries/Components/View/__tests__
+    cp /reproducer/fantom/HitSlopContentBounds-itest.js "$view_tests/"
+    export CXXFLAGS=-Wno-error=deprecated-literal-operator
+    build || verdict 2 "the tester did not build"
+    run_fantom "$view_tests/HitSlopContentBounds-itest.js"
+    view_widens="a View child's hitSlop widens its parent's overflowInset to right:-20"
+    [ "$fantom_status" -eq 0 ] && verdict 0 "$view_widens, and so does a ScrollView child's"
+    view_passed="✓ widens the parent's overflowInset for a View child"
+    scroll_view_failed="✕ widens the parent's overflowInset for a ScrollView child"
+    scroll_view_narrow='Expected {top:0,right:-20,bottom:-0,left:0} but received {top:0,right:-0,bottom:-0,left:0}.'
+    if grep -qF "$view_passed" <<<"$fantom_output" && grep -qF "$scroll_view_failed" <<<"$fantom_output" &&
+      grep -qF "$scroll_view_narrow" <<<"$fantom_output"; then
+      verdict 1 "$view_widens; a ScrollView child's with the same hitSlop leaves it at right:-0"
+    fi
+    verdict 2 "HitSlopContentBounds-itest.js failed another way"
+    ;;
   concurrent-testers-null-runtime)
     # The stock Debug tester runs View-itest.js once through yarn fantom, which leaves the test's bundle in .out, then
     # 16 testers at a time on that bundle, as yarn fantom starts them; then the same with the inspector off.
