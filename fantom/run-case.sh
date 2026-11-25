@@ -287,6 +287,30 @@ case "$case_name" in
     fi
     verdict 2 "HitSlopContentBounds-itest.js failed another way"
     ;;
+  rendered-text-children)
+    # A paragraph holding a nested Text, read through getRenderedOutput({props: []}).toJSONObject(): its JSON, then the
+    # nested Text's children joined as the list FantomJsonObject declares them.
+    text_tests=packages/react-native/Libraries/Text/__tests__
+    cp /reproducer/fantom/RenderedTextChildren-itest.js "$text_tests/"
+    export CXXFLAGS=-Wno-error=deprecated-literal-operator
+    build || verdict 2 "the tester did not build"
+    declared=$(grep --max-count 1 --extended-regexp '^ +children: ' private/react-native-fantom/src/getFantomRenderedOutput.js || true)
+    echo "FantomJsonObject's children in getFantomRenderedOutput.js:$declared"
+    run_fantom "$text_tests/RenderedTextChildren-itest.js"
+    [ "$fantom_status" -eq 0 ] && verdict 0 "the nested Text's children are the list [\"bc\"], and joining them gives bc"
+    string_json='{"type":"Paragraph","props":{},"children":["a",{"type":"Text","props":{},"children":"bc"}]}'
+    if grep -qF "but received $string_json." <<<"$fantom_output"; then
+      if grep -qE '^ +children: ReadonlyArray<FantomJsonObject \| string>,$' <<<"$declared" &&
+        grep -qF "✕ joins the nested Text's children" <<<"$fantom_output" &&
+        grep -qE 'TypeError: (undefined|.*join) is not a function' <<<"$fantom_output"; then
+        verdict 1 "the nested Text's children are the string \"bc\", which FantomJsonObject types as ReadonlyArray<FantomJsonObject | string>, so joining them throws a TypeError"
+      fi
+      if grep -qE '(> *\| *string|: *string *\|)' <<<"$declared"; then
+        verdict 0 "the nested Text's children are the string \"bc\", which FantomJsonObject's type now admits"
+      fi
+    fi
+    verdict 2 "RenderedTextChildren-itest.js failed another way"
+    ;;
   concurrent-testers-null-runtime)
     # The stock Debug tester runs View-itest.js once through yarn fantom, which leaves the test's bundle in .out, then
     # 16 testers at a time on that bundle, as yarn fantom starts them; then the same with the inspector off.
